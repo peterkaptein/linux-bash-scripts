@@ -1,0 +1,4 @@
+deleting desktop (Copy) copy.ini
+deleting FedoraMediaWriter-helper copy.log
+deleting desktop (Copy) copy.ini
+deleting FedoraMediaWriter-helper copy.log
