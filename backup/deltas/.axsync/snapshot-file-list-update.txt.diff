@@ -1,0 +1,17 @@
+--- /home/peterkaptein/Documents/git/bash-scripts/backup/deltas/.axsync/snapshot-file-list-aftersync.txt	2025-07-03 13:25:18.168161181 +0200
++++ /home/peterkaptein/Documents/git/bash-scripts/backup/deltas/.axsync/snapshot-file-list-update.txt	2025-07-03 13:26:35.075029075 +0200
+@@ -4,10 +4,11 @@
+ |my-changes.txt
+ |my-diff.txt
+ |my-newfiles-and-deletions.txt
+-|my-server-filelist.txt
+-|my-server-snapshot.txt
+-|my-ssot-filelist.txt
++|my-server--filelist.txt
++|my-server--snapshot.txt
++|my-ssot--filelist.txt
+ |my-ssot-snapshot.txt
+ |.axsync
+ |.axsync/snapshot-date-filesize.txt.abs
+ |.axsync/snapshot-file-list-aftersync.txt
++|.axsync/snapshot-file-list-update.txt

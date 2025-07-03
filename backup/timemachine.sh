@@ -391,6 +391,9 @@ into : $myTimeslot_Dir
         # CP will only look at date/time
         cp -aruv "$sourceDir" "$myTimeslot_Dir"
 
+        # TODO: use find, compate file dates, if destination is file and / or older
+        #       - use rsync to assute file is copied properly
+
         echo "
 Backup done of new and updated files."
 
@@ -490,6 +493,7 @@ Step 4: Update 00 snapshot:
             # Create new symbolic link
             cp -ar -s "$realFile" "$realFile_Link" 
             # It would be nice if cp had a -mkpath flag like rsync has
+
         done   
 
         echo "4.2.c: Remove empty folders from snapshot, so next backup in new timeslot is cleaner" # Step 4
@@ -510,6 +514,7 @@ Step 1: create dir for snapshot"
         # No symbolic links!
         echo "Step 2: Copy files to $myTimeslot_Dir"
         cp -ar "$sourceDir" "$myTimeslot_Dir" # -ar = archive / keep date/time, and do copy recursive
+
 
         # Step 3: Make our first snapshot
         echo "Step 3: Create 00-snapshot"
@@ -532,11 +537,14 @@ sourcedir="" # Paths need to be absolute, for symbolic links to be created
 backupLocation=""
 backupFolder=""
 
+
 for timeSlot in ${myTimeSlots[@]}
 do
-    echo  "Timeslot: $timeSlot"
-    makeTimeMachineBackup "$timeSlot" "$sourcedir" "$backupLocation" "$backupFolder"
+     echo  "Timeslot: $timeSlot"
+     makeTimeMachineBackup "$timeSlot" "$sourcedir" "$backupLocation" "$backupFolder"
 done
+
+
 
 
 # You can use openssl to encrypt and decrypt using key based symmetric ciphers. For example:

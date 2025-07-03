@@ -1,0 +1,4 @@
+my-server--filelist.txt
+my-server--snapshot.txt
+my-ssot--filelist.txt
+.axsync/snapshot-file-list-update.txt

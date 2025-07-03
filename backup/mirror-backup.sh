@@ -1,558 +1,713 @@
-# This script synchronizes and mirrors client and server, so that you can use the same files on any machine you work on.
-# Server is initial in the lead. Server will be called first by copying all files newer than what is local.
-# Once that is done, the client is checked for discrepancies. 
+# Mirror-bacup Basis
 
-# Rules:
-# 1: Files deleted on another client, should also be deleted on this client.
-# 2: Files newer than what is on the server, should be copied to the server (standard rsync option)
-# 3: Files deleted locally should also be deleted remote
+# Assumptions
+# - Both local and remote machines can have mutations
+# - After local sync we only need to know what files were added and deleted
 
-# The problem: 
-# - The linux file-system does not keep history of file deletions.
+# - When local files were deleted, we also want to delete them elsewhere
+#   and the other way around. This way, locations update each other
 
-# To solve this problem, the following is done:
-# - All clients create a deletion log in the folder /.deleted/, which is uploaded on sync
-# - State is maintained in ./.backups, with logs per destination folder
+# Possible race conditions
+# - File is marked as deleted. The sync hsppens, then memoery is removed
+#   - When new sync happens, with servert that still has that file, we wil restore that file
+#   Possible solutions:
+#   - We need to keep "deleted" list and execute from last sync, 
+#     as was the case with original sync/mirror scrpt
+#   - OR we sync with all servers 
+#   - OR we create a server-size .deleted folder with names and creation date of deleted file 
+#     at time of deletion, filesize zero (or minimal)
+#     - If a file with the same name is older, it is deleted, and we copy the deleted file. If it is newwe, it has been restored.
+#       and needs to be copied.
+#     - A deleted file CAN be a symbolic link -- too complex now
 
-# Limitations of this version
-# - If the destination folder is used multiple times in this script, for different 
-
-
-# To execute rule 1, and to create a deletion log, the following is done:
-# 1: The client first assures it has all files from the server, based on an "outdated" state
-# 2: The client downloads the /.deleted folder from the server and assures all deleted files are indeed deleted
-# 3: Once the client is up to date it will dry-run a backup to the server, 
-#    - This is to let rsync report all files it will delete on the server, based on deletions locally
-# 4: The result of that dry-run  is stored in a new "deleted-YYYYMMMDDD-HHMM" file in the loal /.deleted/ folder 
-# 5: The content of /.deleted/ is then copied to the server on sync
-# Thus the server (and all other clients) has all information on what files were deleted locally. 
-
-# ================================================================================
-# This script uses basic functionalities of the Linux Bash commands,
-# As that framework is mature enough to do almost everything you can imagine
-# No dependencies on fancy libraries.
-
-# WORK IN PROGRESS, NOT TESTED
-
-# https://www.ubuntumint.com/systemd-run-script-on-shutdown/
-# To run the script right before the system powers off, 
-# you need to place the script in the /usr/lib/systemd/system-shutdown
-# System sleep has same: /usr/lib/systemd/system-sleep
-
-# So script needs to be of following components
-# Setup script to: 
-# 1: Copy main backup script to include in all local scripts, to assure one behavior only
-# 2: Copy sleep and shutdown scripts, to backup computer on sleep and shutdown - Let them notify user!
-# 3: Copy chron-script to chron, to start chron job every X hours
-# 4: Create a .backup.config file in ~/ Home directory, for the user to fill in.
-
-# The user needs to:
-# 1: Modify the backup.config to state which folders need to be backed up
-# 2: Be able to run a testrun of the full backup, with clear feedback on the job
-# 3: Be able to indicate what backup it wants to run/test from the list
-
-# The backup.config file 
-# Can have lines that are comments. These lines will be ignored when reading line by line
-
-# Using a wnotify : notify-send "Notification" "Long running command \"$(echo $@)\" took $(($(date +%s) - start)) seconds to finish"
-# https://askubuntu.com/questions/409611/desktop-notification-when-long-running-commands-complete
-
-# Local
-gl_backupLogDir="../.backups"
-gl_mostRecentBackupFile="$gl_backupLogDir/.mostrecentbackup"
-
-gl_into_warning="
-Brief intro:
-==========================
-This backup will mirror source and destinaion.
-- Files deleted on the destination will also be deleted locally
-- Files deleted locally will be deleted remotely
-- Files updated on the server will be updated locally, and the other way around.
-
-It can be used to:
-- Share local mirrored folders between project members
-- Work from multiple machines, with an exact mirror of all files as long as the software runs
-- Backup your work
-
-Running a Time Machine backup
-===========================
-To keep all files on the backup-location, consider running a Time Machine backup. 
-This will save a state of your folders, in specific time slots. 
-
-How this mirror-backup works
-===========================
-
-1: Identifiers:
-===============
-Each backup requires an identifier, so the system knows what logs to query.
-
-2: Local deletes:
-=================
-To keep track of local deletes, 
-the mirror-backup will first do a dry run to the destination.
-This to compare the source-state with that of the destination.
-All files missing in the source, will be marked as "deleted".
-
-3: First run:
-=============
-On first run, it will copy all files from destination to source, 
-to assure your source has all files already backed up, 
-and to avoid the system to think that all files have been deleted locally.
-
-After this first run, it will start the mirroring, making your source leading.
-
-4: Successive runs:
-===================
-Each successive run will first download the list of deleted files from the destination.
-Using this list, it will delete everything that was deleted from the destination.
-
-Once your source is up to date, the system will start file-mirroring 
-source and destination.
-
-Source already a copy from destination?
-=======================================
-If you are 100% sure your source is 100% the same as the destination, 
-and that the destination mirrors your source, you can run the intial setup.
-
-    Local and remote deletes will be undone:
-    =======================================
-    Keep in mind that deletes will be undone if these files 
-    still exist in the destination or on the source.
-
-    Best solution: choose one and start fresh:
-    ==========================================
-    To assure you do not undo deletes, choose which version is leading and start from there.
-    Leave either the original source or orignal destination as a backup.
-
-WARNING: Tested, but not produciton ready:
-==========================================
-While tested, this code is not production ready. 
-This means that use is for your own risk.
-
-It also means that you should always run a separate backup 
-to assure that you can recover your work in case this code messes things up.
-
-Usage:
-======
-runMirrorBackup 'backup-id' 'your/source/dir/' 'your/destination/dir/' 'yourfolder' 
-
-To run the mirror-backup without this warning, add 'no-warning' as the 5th parameter
-To run the mirror-backup without this warning and confirm, add 'no-confirm' as the 5th parameter
-
-Chron-job:
-==========
-To run the mirror-backup every hour, day, week, or to change your Chron-settings, run:
-
-sudo runMirrorBackup 'configure-chron'
-
-"
-
-downloadDeletedList(){
-    # Cases we cover
-    # - Destination can be updated from multiple sources
-    # - Source can run out of sync due to this
-    # - Files on this source (s1), might have been deleted from another source (s2) since
-
-    # Actions to take, before sync form source to destination
-    # - Remove all files deleted on other sources, 
-    #   using the "deleted" list these sources provided.
-    #   - We do this as a next step in: runMirrorBackup()
-    #   - Using: executeDestinationDeletions() 
-
-    # Precondition: 
-    # - We already checked if the sourcedir and dest dir have trailing slash
-
-    sourceDir="$1"      # has trailing /
-    destinationDir="$2" # has trailing /
+# Types of repositories
+# 1: Mirrors from local files on computer
+# 2: Mirrors from server files, based on network drives
 
 
-    # Copy .deleted/ log from server to client, so we know what the status is on that
-    rsync -aruP --delete "$destinationDir.deleted/" "$sourceDir.deleted/"
-    # We will first cleanup this source
+# We will have a local 
+# - my-sync-completed-snapshot.txt
+# - my-current-snapshot.txt
+# - my-newfiles.txt
+# - my-deletes.txt
 
-}
+# For the server-directories, we will need to set who is leading
+# 1: Client
+# 2: Server
 
-deleteFilesInDeletedFilesLog(){
+# Bash has JSON parser and query
+# https://blog.kellybrazil.com/2021/04/12/practical-json-at-the-command-line/
+#
 
-    sourceDir="$1" # Has trailing slash
-    deleteLog_FileName="$2"
+#
+# =============================================================
+# Variables from system
+weekNumber=$(date +%U) 
+monthName=$(date +%m) 
+monthNumber=$(date +%mm) 
+year=$(date +%Y)
+day=$(date '+%m%d')
+hour=$(date '+%Y-%m%d-%H%M%S')
 
-    foldersDelCount=0
-    fileDelCount=0
-    foldersAlreadyDeletedCount=0
-    fileAlreadyDeletedCount=0
-    totals=0
+timeslot_hour="$hour" 
 
-    cat "$deleteLog_FileName"|
-    while IFS= read -r line
-    do
-        # line reads: "deleted folder/filename"
-        # Remove "deleted "
-        fileName=${line:9} # hardcoded length is tricky. What if different implementation. Better is to find first space
-        fullPath="$sourceDir$fileName"
 
-        # Check if file exists
-        if [ -f "$fullPath" ]
-        then
-            fileDelCount=$( fileDelCount+1 )
-            echo "- remove file     : $fullPath"
-            rm "$fullPath" # remove all content 
-        else
-            fileAlreadyDeletedCount=$(( fileAlreadyDeletedCount+1 ))
-        fi
+__mySyncReportsFolder=".axsync" # Snapshots after sync
 
-        if [ -d "$fullPath" ]
-        then
-            foldersDelCount=$(( foldersDelCount+1 ))
-            echo "- remove dir      : $fullPath"
-            rm "$fullPath" # remove all content 
-        else
-            foldersAlreadyDeletedCount=$(( foldersAlreadyDeletedCount+1 ))
-        fi
-    done 
+# Made each hour / each cycle
+__snapshot_dateTimeFileSize="snapshot-date-filesize.txt"
+__snapshot_rawFileList_mileStone="snapshot-filelist-milestone.txt" 
+__snapshot_rawFileList_mostRecent="snapshot-filelist-mostrecent.txt"
+__snapshot_fileList_locallyAbsent="extracted-filelist-locaslly-absent.txt"
+__snapshot_fileList_overlapping="extracted-filelist-overlapping.txt"
+__snapshot_fileList_locallyAdded="extracted-filelist-locally-added.txt"
+__snapshot_fileList_Modified="extracted-filelist-modified.txt"
+__deletedFolder=".deleted/"
 
-    # Scoping issue. All report 0
-    # echo "Total delete-references $totals"
-    # echo "We deleted $fileDelCount files and $foldersDelCount folders"
-    # echo "Files already deleted: $fileAlreadyDeletedCount. Folders already deleted $foldersAlreadyDeletedCount"
-    # Open file from /.deleted
-    
-    # Read theough each line, and delete the associated file if it exists
+__prefix_remote="merge-"
 
-}
+__sep="|"
 
-executeDestinationDeletions(){
-    sourceDir="$1"      # has trailing /
-    identifier=$2
-
-    # Most recent date?
-    mostRecentBackupDate="0000000000" # Do all files
-
-    mostRecentBackup_File="$sourceDir$gl_mostRecentBackupFile"
-
-    # Do we have a most recent backup date?
-    if [[ -f "$mostRecentBackup_File-$identifier" ]]
-    then
-        # Get date of most recent backup
-        mostRecentBackupDate=$(<"$mostRecentBackup_File-$identifier")
+fileExists(){
+    file="$1"
+    if [ -f "$file" ]
+    then     
+        echo true
+        exit
     fi
-    
-    compareString="deleted-$mostRecentBackupDate"
-    # Go through /.deleted lists from server
-    # - This is a log of all files delted from the server by rsync
-    # - As time passes, this list will increase
-    # - We will keep a local score on what date/time the last check was, 
-    #   so we only do from most recent to that point
-
-    echo "
-
-Step 2: Cleanup
-==============================
-Perform all deletions, after : $mostRecentBackupDate
-Using compare-string         : '$compareString'
-"
-
-    find "$sourceDir.deleted/" -print0 |
-    while IFS= read -r -d '' deleteLog_FileName
-    do
-    
-        # Compare file with comare string
-        if [ "$deleteLog_FileName" \> "$sourceDir.deleted/$compareString" ]
-        then
-            echo "
-Execute : $deleteLog_FileName
-========="
-            deleteFilesInDeletedFilesLog "$sourceDir" "$deleteLog_FileName"
-        fi
-        
-    done 
-
-    # Store "downloaded" in "mostrecentbackup" somewhere our sync script will not backup
-    # For instance where the script itself lives 
-    # This will also update the date of the file
-
-    # Done. The local client is now synchronized
-
+    echo false
 }
 
-runFirstTime(){
-    sourceDir="$1"      # has trailing /
-    destinationDir="$2" # has trailing /
-    identifier="$3"
+file_A_isOlderThan_B(){
+    fileA="$1"
+    compareTo="$2"
 
-    mostRecentBackup_File="$sourceDir$gl_mostRecentBackupFile"
-
-    echo "
-Step 1: Check - first time?
-==============================
-Check if this is first run for: $sourceDir"
-    # Check "doanloaded" log file
-    # Older than a day? This machine is probably out of sync. Get server data
-
-    if [[ -f "$mostRecentBackup_File-$identifier" ]]
+    if [ "$fileA" -ot "$compareTo" ]
     then
-        echo "- We already initiated this mirror-backup. No download of intial files needed."
-    else
-        echo "- This is the first run. Download all files from destination."
-        # Copy from server to client.
-        rsync -aruvP "$destinationDir" "$sourceDir"
-        # We do NOT delete local files that are not present on server 
+        echo true
+        exit
     fi
-  
+
+    echo false
 }
 
-mirrorClientToServer(){
-    # Cases we cover
-    # - Destination can be updated from multiple sources
-    # - Source can run out of sync due to this
-    # - Files on this source (s1), might have been deleted from another source (s2) since
+fileIsInDeletedFolder(){
 
-    # Precondition: 
-    # - We already checked if the sourcedir and dest dir have trailing slash
-    # - We already removed the files that are in our .deleted/ logs
-    #   So that our system is reflecting the server PLUS possible local changes and additions
+    filePath="$1"
+    if [[ "$filePath" == *"$__deletedFolder"* ]]
+    then
+        echo true
+        exit
+    fi
+    echo false
+}
+fileIsInSyncReportsFolder(){
 
-    # Next steps:
-    # - None in code
-
-    # Now we can make the backups
-
-    sourceDir="$1"      # has trailing /
-    destinationDir="$2" # has trailing /
-    identifier="$3"
-
-    # Where we store our logs: relative to source
-    backupLog_Dir="$sourceDir$gl_backupLogDir"
-    mostRecentBackup_File="$sourceDir$gl_mostRecentBackupFile"
-
-    echo "
-Step 3: Mirror source and destination
-=====================================
-Executing..."
-
-    # Where do we store the logs?
-
-    # https://askubuntu.com/questions/706903/get-a-list-of-deleted-files-from-rsync
-
-    mkdir -p "$backupLog_Dir/$identifier"
-
-    # Step 1: Determine what files were deleted locally, by running a compare with the server
-    date=$(date '+%Y-%m%d-%H%M%S')                # Date/time of logging
-    deletedLogFile="$sourceDir.deleted/deleted-$date.txt"  # File to store compare in
-    outgoingLogFile="$backupLog_Dir/$identifier/$date-out.txt"
-    incomingLogFile="$backupLog_Dir/$identifier/$date-in.txt"
-
-    # Assure the logging-directories are there
-    mkdir -p "$sourceDir.deleted"
-    mkdir -p "$backupLog_Dir"
-
-    # Do a dry-run of rsync to get list of locally deleted files. 
-    echo "Step 3.1   : Create a list of locally deleted files via rsync dry-run."
-    rsync --dry-run --delete -ar --info=DEL  "$sourceDir" "$destinationDir" >> "$deletedLogFile"
-    # --info=DEL  : Only register/log locally deleted files.
-    # >> $deletedLogFile : Store result of dry run in deletedLogFile location
-
-    # Remove empty files
-    find "$sourceDir.deleted/" -type f -size -10c -delete
-    # when a backup did not lead to deletes, the file is empty
-    # -size -10c = any file less than 10 bytes will be deleted
-
-    # Step 2: Run sync process, 
-    # - Copy all changes from local to server.
-    # - Delete all files on the server, that were deleted on the client
-    # - Then read the server, and delete all local files no longer present on the server
-    # - If several users work in the same folder (team) then the team is always syncrhonized
-
-    # We assume that a time-machine backup is running on the server, to safeguard accidental deletes 
-
-    echo "Step 3.2.a : Push new files from source to destination"
-    # Step 2.1: First update server, delete locally deleted files also on destination 
-    echo "rsync Source to Destination
-==========================
-From  : $sourceDir 
-To    : $destinationDir
-
-If nothing is listed below, the destination was already up to date.
-
-" >> "$outgoingLogFile"
-    rsync --delete -aruvP --info=BACKUP "$sourceDir" "$destinationDir" >> "$outgoingLogFile"
-    # This assures that files we removed from source are also removed on the destination, 
-    # before dowloading all changes from the server 
-
-    # Step 2.2: Then update client, delete files in source that were deleted on the destination
-    echo "Step 3.2.b : Pull new files from destination to source"
-    echo "rsync Destination to Source
-==========================
-From  : $destinationDir 
-To    : $sourceDir
-
-If nothing is listed below, the source was already up to date.
-
-" >> "$incomingLogFile"
-    rsync --delete -aruvP --info=BACKUP "$destinationDir" "$sourceDir" >> "$incomingLogFile"
-    # -aruvP = archive with creation / modify dates intact, recursive, only updates, P
-    # --info=BACKUP = only log files backed up
-
-    # In theory we already removed all destination-deleted files in source
-    # But as this is a standard flag on rsy# -aruvP = archive with creation / modify dates intact, recursive, only updates, Pnc we use --delete as a double measure 
-    
-    # Step 3: Register the date of this most recent backup
-    echo "Step 3   : Save timestamp of this most recent backup"
-    echo "$(date '+%Y-%m%d-%H%M%S')" > "$mostRecentBackup_File-$identifier"
-
-    echo "
-=====================
-Mirror-backup is done
-=====================
-- Destination and source are now in sync again        - if they were not before.
-- Destination has new list with deletions from source - if deletions were made.
-
-Any other machine (S2, S3, ...) that synchronizes with the same destination 
-will be able to mirror its state as well
-- By first removing all files that were deleted elsewhere locally
-- And then by syncing source with destination
-
-New files on S2, S3, ...?
-=========================
-If S2, S3, ... had any new files, they will be on destination as well. 
-
-Logs from this session can be found in ../.backups
-
-"
+    if [[ "$myAddedFileName" == *"$__mySyncReportsFolder"* ]]
+    then
+        echo true
+        exit
+    fi
+    echo false
 }
 
-runMirrorBackup(){
-    identifier="$1"
-    sourceDir="$2"
-    destinationDir="$3"
-    destinationFolder="$4"
-    runWithoutConfirm="$5"
+escapePathForRegex(){
+    _path="$1"
+    echo "$(replace "$_path" "/" "\\/")"
+}
+
+createSnapshotFileLocation(){
+    _myBackupPath="$1"
+    _fileName="$2"
+
+    echo "$_myBackupPath/$__mySyncReportsFolder/$_fileName"
+}
+
+createDeletedRefFile()
+{
+    myDeletedFile="$1"
+    echo "Marked as deleted on $hour" > "$myDeletedFile" 
+}
+
+ensureDirForFileCopy() {
+    # Parameter  based, like Bash-file. $1 is first item in input
+    directoryAndFilename="$1" # based on input
+
+    # Ensures a directory is there when needed
+    # 1: Get path
+    path=$(dirname "$directoryAndFilename") # Standard Bash function to get directory name fron string
+
+    # 2: Create dir if not there yet
+    mkdir -p "$path" # Recursive, so if parents are not there, they will be created as well
+}
+
+replace(){
+    baseString="$1"
+    searchFor="$2"
+    replaceWith="$3"
+
+    echo "${baseString//"$searchFor"/"$replaceWith"}"
+}
+
+
+getPathTo(){
+    myPath="$1"
+    echo "${myPath%/*}"
+}
+
+get_FileDeletionMarker(){
+    myFileLocation="$1"
+    path=$(dirname "$myFileLocation")
+    fileName=$(basename "$myFileLocation")
+    echo "$path/.deleted/$fileName"
+}
+
+removeAbsolutePathFromSnapshot(){
+    _myBackupPath="$1"
+    _snapShotFile="$2"
+    echo "removeAbsolutePathFromSnapshot" 
+    # Remove absolute path
+    escapedBackupPath="$(escapePathForRegex "$_myBackupPath" )"
+    sed "s/$escapedBackupPath//" <"$_snapShotFile.abs" > "$_snapShotFile"
+}
+
+save_cleanList_diffAdded(){
+    _myFile="$1"
+    _saveAs="$2"
     
+    sed -n "/^[+].*$__sep.*/p" <"$_myFile" | sed -e "s/^[+-].*$__sep//" > "$_saveAs"
+}
+save_cleanList_diffAbsent(){
+    _myFile="$1"
+    _saveAs="$2"
     
-    echo "
-RUN MIRROR-BACKUP:
-==================
-Backup-ID : '$identifier'
-From      : $sourceDir
-To        : $destinationDir
-Into      : '$destinationFolder'"
+    sed -n "/^[-].*$__sep.*/p" <"$_myFile" | sed -e "s/^[+-].*$__sep//" > "$_saveAs"
+}
+save_cleanList_diffOverlapping(){
+    _myFile="$1"
+    _saveAs="$2"
+    
+    sed -n "/^[/s].*$__sep.*/p" <"$_myFile" | sed -e "s/^[+-].*$__sep//" > "$_saveAs"
+}
 
-    # Skip this if the user states "no confirmation needed"
-    if [[ "$runWithoutConfirm" != "no-confirm" ]]
-        then 
+# ==============================================================
+# SNAPSHOTS
+# ==============================================================
+make_snapshot_DateTimeSize(){
+    _myBackupPath="$1"
 
-        if [[ "$runWithoutConfirm" != "no-warning" ]]
-        then # Run warning
+    _saveAs="$(createSnapshotFileLocation "$_myBackupPath" "$__snapshot_dateTimeFileSize")"
+    ensureDirForFileCopy "$_saveAs"
 
-        # Tell the user what is going to happen.
-            echo "$gl_into_warning"
-            echo "
-Your settings:
-==============
-Backup-ID : '$identifier'  - Changing this ID will initiate the first run again.
-From      : $sourceDir
-To        : $destinationDir
-Into      : $destinationFolder
-"
-        fi
+    # Find all modified files, using filesize and change date
+    # If a file has been changed, it will be marked in the diff 
+    # as a "removal" and "addition"
+    find "$_myBackupPath/" -printf "%s\t%c\t$__sep%P\n" > "$_saveAs.abs"
+}
 
-        # Ask for confirmation
-        read -p "Continue? (Y/N): " confirm
 
-        if  [[  $confirm == [nN] ]]
-        then # No: exit
-            echo "You stopped the backup
-Exiting."
+# Generic function: One way to do this
+_makeFileListSnapshot(){
+    _myBackupPath="$1" # Does not end with /
+    _snapshotFileList="$2"
+
+    # Construct name to save file as
+    _saveAs="$(createSnapshotFileLocation "$_myBackupPath" "$_snapshotFileList")"
+    ensureDirForFileCopy "$_saveAs"
+
+    # Read my local backup path, write to snapshot filelist name / folder
+    find "$_myBackupPath/" -printf "$__sep%P\n" > "$_saveAs"
+
+    # We use the | character to separate
+}
+
+make_snapshot_fileList_mostRecent(){
+     _myBackupPath="$1"
+
+    # Use generc function to make snapshot after sync
+     _makeFileListSnapshot "$_myBackupPath" "$__snapshot_rawFileList_mostRecent"
+}
+make_milestoneSnapshot_fileList(){
+     _myBackupPath="$1"
+
+    # Use generc function to make snapshot for current state
+     _makeFileListSnapshot "$_myBackupPath" "$__snapshot_rawFileList_mileStone"
+}
+
+# We import deleted, and date/time 
+# We merge remote-deleted with local deleted, later
+# - We use date/time form both local and remote to dertermine what files need to be updated
+
+# ==============================================================
+# SNAPSHOT-EXTRACTIONS
+# ==============================================================
+
+extract_MyNewAndDeletedFilesFromSnapshot(){
+    _myBackupPath="$1"
+
+    # Sources:
+    _oldSnapshotFile="$(createSnapshotFileLocation "$_myBackupPath" "$__snapshot_rawFileList_mileStone")" 
+    _newSnapshotFile="$(createSnapshotFileLocation "$_myBackupPath" "$__snapshot_rawFileList_mostRecent")"
+
+    # Results: file name
+    _saveAsDeleted="$(createSnapshotFileLocation "$_myBackupPath" "$__snapshot_fileList_locallyAbsent")"
+    _saveAsAdded="$(createSnapshotFileLocation "$_myBackupPath" "$__snapshot_fileList_locallyAdded")"
+   
+    ensureDirForFileCopy "$_newSnapshotFile"
+
+    # Find all files and dirs, locally, and list them
+    # Produce a simple file list, to find additions and removals
+    # Add an = separator-sign to distinguish it from other output
+    _myDiffFile="$_newSnapshotFile.diff"
+    
+    diff -u "$_oldSnapshotFile" "$_newSnapshotFile" > "$_myDiffFile"
+
+    # Code below does the following:
+    # 1: Isolate items that start woith a + or - via sed -n
+    # 2: Remove any unwatend item using sed -e
+    # __sep is the separator we use to make this easier
+
+    # sed -n "/^[-].*$__sep.*/p" <"$_myDiffFile" | sed -e "s/^[+-].*$__sep//" > "$_saveAsDeleted"
+    # sed -n "/^[+].*$__sep.*/p" <"$_myDiffFile" | sed -e "s/^[+-].*$__sep//" > "$_saveAsAdded"
+
+    save_cleanList_diffAbsent "$_myDiffFile" "$_saveAsDeleted"
+    save_cleanList_diffAdded "$_myDiffFile" "$_saveAsAdded"
+
+    # Result: We have a clean list of all new and deleted files, based on the the SSOT
+}
+
+extract_AddedAbsentOverlappingFilesFromTheirSnapshots(){
+    _theirBackupPath="$1"
+    _myBackupPath="$2"
+    
+    # Sources:
+    _theirSnapshotFile="$(createSnapshotFileLocation "$_theirBackupPath" "$__snapshot_rawFileList_mostRecent")" 
+    _mySnapshotFile="$(createSnapshotFileLocation "$_myBackupPath" "$__snapshot_rawFileList_mostRecent")"
+
+    # Results: file name
+    _saveAsAbsent="$(createSnapshotFileLocation "$_myBackupPath" "$__prefix_remote$__snapshot_fileList_locallyAbsent")"
+    _saveAsAdded="$(createSnapshotFileLocation "$_myBackupPath" "$__prefix_remote$__snapshot_fileList_locallyAdded")"
+    _saveAsOverlapping="$(createSnapshotFileLocation "$_myBackupPath" "$__prefix_remote$__snapshot_fileList_overlapping")"
+   
+    ensureDirForFileCopy "$_newSnapshotFile"
+
+    # Find all files and dirs, locally, and list them
+    # Produce a simple file list, to find additions and removals
+    # Add an = separator-sign to distinguish it from other output
+    _myDiffFile="$_mySnapshotFile.remote-diff"
+    
+    # We are in the lead. If we have files that they have not, they have been "added"
+    # If they have files that we have not, they "must be deleted remotely"
+    diff -u "$_theirSnapshotFile" "$_mySnapshotFile" > "$_myDiffFile"
+
+    # We do check in the process, whether "must be deleted" is correct 
+    # based on our local records in /.deleted
+
+    # Code below does the following:
+    # 1: Isolate items that start woith a + or - via sed -n
+
+    # 2: Remove any unwatend item using sed -e
+    # __sep is the separator
+
+    # We derive three lists: absent, added and overlapping (space as prefix)
+    # sed -n "/^[-].*$__sep.*/p" <"$_myDiffFile" | sed -e "s/^[+-].*$__sep//" > "$_saveAsAbsent"
+    # sed -n "/^[+].*$__sep.*/p" <"$_myDiffFile" | sed -e "s/^[+-].*$__sep//" > "$_saveAsAdded"
+    # sed -n "/^[\s].*$__sep.*/p" <"$_myDiffFile" | sed -e "s/^[+-].*$__sep//" > "$_saveAsOverlapping"
+    
+    save_cleanList_diffAbsent "$_myDiffFile" "$_saveAsAbsent"
+    save_cleanList_diffAdded "$_myDiffFile" "$_saveAsAdded"
+    save_cleanList_diffOverlapping "$_myDiffFile" "$_saveAsOverlapping"
+    # Result: We have a clean list of all new and deleted files, based on the the SSOT
+}
+
+extract_ModifiedFilesFromTheirSnapshots(){
+    _theirBackupPath="$1"
+    _myBackupPath="$2"
+
+    # We want to know what files have changed their fingerprint since last time
+
+    # "Newer" files are marked with a + when "added" in the "new" snapshot
+    # However, we want to exclude deleted files on both sides, 
+    # as these were probably deliberately removed and should not be introduced again
+    _theirDateTimeSnapshotFile="$(createSnapshotFileLocation "$_theirBackupPath" "$__snapshot_dateTimeFileSize")" 
+    _myDateTimeSnapshotFile="$(createSnapshotFileLocation "$_myBackupPath" "$__snapshot_dateTimeFileSize")"
+    _saveAsModified="$(createSnapshotFileLocation "$_myBackupPath" "$__prefix_remote$__snapshot_fileList_Modified")"
+    
+    _myOverlappingFilesSnapshot="$(createSnapshotFileLocation "$_myBackupPath" "$__prefix_remote$__snapshot_fileList_overlapping")"
+   
+    _myDiffOneFile="$_myDateTimeSnapshotFile.remote-diff1.txt"
+    _myDiff_addedOrOverlapping="$_myDateTimeSnapshotFile.remote-diff-cleanlist.txt"
+    _myDiff_ModifiedFiles="$_myDateTimeSnapshotFile.remote-diff-onlymodified.txt"
+    # We want to know what modified and new files we have, compared to their list
+    # Any local modification and addition will show up with a +
+    diff -u "$_theirDateTimeSnapshotFile" "$_myDateTimeSnapshotFile" > "$_myDiffOneFile"
+
+    # Locally absent files, based on their filelist, is extracted with another method
+
+    # Step 2: Isolate all files marked with a +, as these have been changed or added locally 
+    # Also: remove all that we do not need. The reuslt is a clean file.
+    # sed -n "/^[+].*$__sep.*/p" <"$_myDiffOneFile" | sed -e "s/^[+-].*$__sep//" > "$_myDiffTwoFile"
+
+    save_cleanList_diffAdded "$_myDiffOneFile" "$_myDiff_addedOrOverlapping"
+
+
+    # Result from previous step:
+    # - We have a clean file-list, containing all items that have been changed or added locally
+    
+    # Now we isolate those items we have both here and there, 
+    # as we handle syncing local additiona elsewhere.
+    diff -u "$_myDiff_addedOrOverlapping" "$_myOverlappingFilesSnapshot" > "$_myDiff_ModifiedFiles"
+
+    # sed -n "/^[+].*$__sep.*/p" <"$_myDiffOneFile" | sed -e "s/^[+-].*$__sep//" > "$_saveAsModified"
+    save_cleanList_diffOverlapping "$_myDiff_ModifiedFiles" "$_saveAsModified"
+
+}
+
+
+register_MyNewlyDeletedFiles(){
+    _myBackupPath="$1"  
+
+
+    # Load locally-deleted files list
+    # - Remove files remote
+    _myDeleted="$(createSnapshotFileLocation "$_myBackupPath" "$__snapshot_fileList_locallyAbsent")" 
+
+    # Load remotely deleted files list
+    # - Remove files locally
+    cat "$_myDeleted"|
+    while IFS= read -r deletedFile
+    do
+
+        _deletedFile="$_myBackupPath/$deletedFile"
+        if $(fileIsInSyncReportsFolder "$_deletedFile"); then
+            # We skip files located in the backup log
             return
         fi
-    fi
+        if $(fileIsInDeletedFolder "$_deletedFile"); then
+            # We skip files located in .deleted
+            return
+        fi
 
-    echo ""
-    echo "Starting the backup"  
+        # Get filename
+        fileName=$(basename "$_deletedFile")
 
-    if  [[ "$sourceDir" != *"/" ]]
-    then 
-        echo "ERROR: The source dir should end with a /"
-        return
-    fi
+        # First handle ourselves
+        _myDeletedFileMarker="$(getPathTo "$_deletedFile")/.deleted/$fileName"
+        ensureDirForFileCopy "$_myDeletedFileMarker"
+        # Concrete file has been delete. But is there a marker?
+        if ! $(fileExists "$_myDeletedFileMarker" )
+        then
+            # Create deleted file-marker, for referecne
+            # This functions as our database of deletions, with time/date
+            echo -n > "$_myDeletedFileMarker"
+        fi
+    done
+}
 
-    if  [[ "$destinationDir" != *"/" ]]
-    then 
-        echo "ERROR: The dest dir should end with a /"
-        return
-    fi
+sync_FilesLocallyAbsent(){
+    _theirBackupPath="$1"  
+    _myBackupPath="$2"
 
-    if  [[ ! -d "$sourceDir" ]]
-    then 
-        echo "ERROR: The source dir does not exist. Exit backup."
-        return
-    fi
-    if  [[ ! -d "$destinationDir" ]]
-    then 
-        echo "ERROR: Desitnation dir does not exist. 
-The backup can only be made to an existing location. Exit backup."
-        return
-    fi
+    # Load locally-deleted files list
+    # - Remove files remote
+    _myAbsentFiles="$(createSnapshotFileLocation "$_myBackupPath" "$__prefix_remote$__snapshot_fileList_locallyAbsent")" 
 
-    # Assure the destination folder exists
-    destination_Dir="$destinationDir$destinationFolder/"
+    # Load remotely deleted files list
+    # - Remove files locally
+    cat "$_myAbsentFiles"|
+    while IFS= read -r absentFile
+    do
+        if $(fileIsInSyncReportsFolder "$myAddedFileName"); then
+            # We skip files located in the backup log
+            return
+        fi
+        if $(fileIsInDeletedFolder "$absentFile"); then
+            # We skip files located in .deleted
+            return
+        fi
 
-    if [[ "$destinationDir" == "$sourceDir" ]]
-    then 
-        echo "ERROR: The backup folder cannot be the same as the source folder."
-        return
-    fi
-    if [[ "$destination_Dir" == "$sourceDir" ]]
-    then 
-        echo "ERROR: The backup folder cannot be the same as the source folder."
-        return
-    fi
+        # Get filename
+        fileName=$(basename "$absentFile")
 
-    if ! [[ -d "$destination_Dir" ]]
-    then 
-        echo "================================"
-        echo "Creating the folder for the backup."
-        mkdir -p "$destination_Dir"
-    fi
+        # First handle ourselves
+        myAbsentFile="$_myBackupPath/$absentFile"
+        myDeletedFileMarker="$(get_FileDeletionMarker "$myAbsentFile")"
+        
+        theirFile="$_theirBackupPath/$absentFile"
+        theirDeletedFile="$(get_FileDeletionMarker "$theirFile")"
+
+        # Check 1: Is this a new file? 
+        # - Do we have a local "deleted"-marker?
+        if ! $(fileExists "$myDeletedFileMarker" )
+        then 
+            # No delete record. Remote file is a new file.
+            rsync "$theirFile" "$myAbsentFile"
+
+            # Done with this file
+            return
+        fi
+
+        # Conclusions: 
+        # - We have a deleted-marker (check 1)
+        # - File was deleted locally.
+
+        # Check 2: is the remote file newer than our local delete?
+        if $(file_A_isOlderThan_B "$myDeletedFileMarker" "$theirFile")
+        then
+            # Remote is newer than delete. Restore local file
+            rsync "$theirFile" "$myAbsentFile"
+
+            # Done with this file
+            return
+        fi
+
+        # Conclusions:
+        # - File was not new, but deleted locally. (check 1)
+        # - Remote copy of the file is older than local delete (check 2)
+        # Actions:
+        # - Delete remote file.
+        # - Make a remore market for our deletion
+        if $(fileExists "$theirFile" )
+        then
+            # Remove remote.
+            rm "$theirFile"
+
+            # Create deleted file, for date/time referecne
+            echo -n > "$theirDeletedFile"
+        fi
+
+    done
+}
+sync_localAdditions(){
+    _theirBackupPath="$1"  
+    _myBackupPath="$2"
+    # In this case, we will handle all files marked as added or modified
+    # in the compare between us and our remote location. 
+
+    # Baserd on specific checks, we will determine what to do.
+   
+   _myLocallyAddedAndModifiedFiles="$(createSnapshotFileLocation "$_myBackupPath" "$__prefix_remote$__snapshot_fileList_locallyAdded")"
+
+    # Get the list of files locally added or modified, either remote or local
+    cat "$_myLocallyAddedAndModifiedFiles"|
+    while IFS= read -r myAddedOrModifiedFile
+    do
 
 
-    # Notify user https://ss64.com/bash/notify-send.html
-    notify-send -t 5000 'Running mirror-backup' "Running the backup...."
+        # Files in .axsync are mine and should not be compared
+        if $(fileIsInSyncReportsFolder "$myAddedOrModifiedFile"); then
+            return
+        fi
 
-    # We run this:
-    # 1: When the user logs in
-    # 2: Every X hours, based on a chron job
+        # Files in .deleted are mine and should not be compared
+        if $(fileIsInDeletedFolder "$myAddedOrModifiedFile"); then
+            # We skip files located in .deleted
+            return
+        fi
 
-    # Step 1: Check if this is the first time for source, and take action
-    runFirstTime "$sourceDir" "$destination_Dir" "$identifier"
+        _myAddedOrModifiedFile="$_myBackupPath/$myAddedOrModifiedFile"
+        _theirAddedOrModifiedFile="$_theirBackupPath/$myAddedOrModifiedFile"
+
+        _theirDeletedFileMarker="$(get_FileDeletionMarker "$_theirAddedOrModifiedFile")"
+        _myDeletedFileMarker="$(get_FileDeletionMarker "$_myAddedOrModifiedFile")"
 
 
-    # Step 2: Clean all remotely deleted files from here as well
-    # So we stay in sync with remote source
-    downloadDeletedList "$sourceDir" "$destination_Dir"
-    executeDestinationDeletions "$sourceDir" "$identifier"
-    # This also prevents a loop where we upload files that were deleted on the server
+        # We have files locally, that either
+        # - Are of a different version
+        # - Are absent on the remote location
 
-    # Step 3: Mirror client to server
-    mirrorClientToServer "$sourceDir" "$destination_Dir" "$identifier"
-    # destinationfolder is an identifier for the last download date/time
+        # Sync-case 1: File is absent on remote
 
-    notify-send -t 5000 'Done running mirror-backup' "All files are safe on server"
+        # Was it deleted there?
+        if $(fileExists "$_theirDeletedFileMarker" )
+        then
+            # It was deleted there.
+
+            # Is the local file newer than the remote deletion?
+            if $(file_A_isOlderThan_B "$_theirDeletedFileMarker" "$_myAddedOrModifiedFile")
+            then
+                # Yes: Local file is newer than remote delete. 
+    
+                # Restore remote file with local (newer) version.
+                rsync "$_myAddedOrModifiedFile" "$_theirAddedOrModifiedFile"
+
+                # Remove remote "Deleted"-record, as it is no longer valid
+                rm "$_theirDeletedFileMarker"
+                # Done with this file
+                return
+            fi  
+
+            # Our local file was neot newer than remote.
+            # Is it older than the remote delete?
+            if $(file_A_isOlderThan_B "$_myAddedOrModifiedFile" "$_theirDeletedFileMarker")
+            then
+                # Yes. Local file is older than remote delete.
+                # Delete local file so we are in sync with remote
+                rm "$_myAddedOrModifiedFile"
+
+                # Create deleted file marker, for date/time referecne
+                echo -n > "$_myDeletedFileMarker"
+                # Done with this file
+                return
+            fi       
+        fi
+
+        # Conclusions:
+        # - File was not deleted remotely. 
+        # - So it is either
+        #   - Modified
+        #   - Not present yet on remote
+
+        # Sync-case 2: Remote file does not  exists.
+        if ! $(fileExists "$_theirAddedOrModifiedFile" )
+        then
+            # Copy local to remote
+            rsync "$_myAddedOrModifiedFile" "$_theirAddedOrModifiedFile"
+            # Done.
+            return
+        fi
+    
+    done
+}
+sync_allModifiedFiles(){
+    _theirBackupPath="$1"  
+    _myBackupPath="$2"
+    # In this case, we will handle all files marked as added or modified
+    # in the compare between us and our remote location. 
+
+    # Baserd on specific checks, we will determine what to do.
+   
+   _myLocallyAddedAndModifiedFiles="$(createSnapshotFileLocation "$_myBackupPath" "$__prefix_remote$__snapshot_fileList_Modified")"
+
+    # Get the list of files locally added or modified, either remote or local
+    cat "$_myLocallyAddedAndModifiedFiles"|
+    while IFS= read -r myAddedOrModifiedFile
+    do
+
+
+        # Files in .axsync are mine and should not be compared
+        if $(fileIsInSyncReportsFolder "$myAddedOrModifiedFile"); then
+            return
+        fi
+
+        # Files in .deleted are mine and should not be compared
+        if $(fileIsInDeletedFolder "$myAddedOrModifiedFile"); then
+            # We skip files located in .deleted
+            return
+        fi
+
+        _myAddedOrModifiedFile="$_myBackupPath/$myAddedOrModifiedFile"
+        _theirAddedOrModifiedFile="$_theirBackupPath/$myAddedOrModifiedFile"
+
+        _theirDeletedFileMarker="$(get_FileDeletionMarker "$_theirAddedOrModifiedFile")"
+        _myDeletedFileMarker="$(get_FileDeletionMarker "$_myAddedOrModifiedFile")"
+
+
+        # We have files locally, that
+        # - Are of a different version
+
+        # Sync-case: File was modified either here or there.
+
+        # Is the local file older than remote?
+        if $(file_A_isOlderThan_B "$_myAddedOrModifiedFile" "$_theirAddedOrModifiedFile")
+        then
+            # Remote is newer than delete. Restore local file with remote
+            rsync "$_theirAddedOrModifiedFile" "$_myAddedOrModifiedFile"
+
+            # Done.
+            return
+        fi
+
+        # Is the remote file older than local?
+        if $(file_A_isOlderThan_B "$_theirAddedOrModifiedFile" "$_myAddedOrModifiedFile")
+        then
+            # Remote is newer than delete. Restore local file with remote
+            rsync "$_myAddedOrModifiedFile" "$_theirAddedOrModifiedFile"
+
+            # Done.
+            return
+        fi
+    
+    done
+}
+
+handleMyAddedDeletedFiles(){
+    _theirBackupPath="$1"  
+    _myBackupPath="$2" 
+
+    _handleAddedDeletedFiles "$_theirBackupPath" "$_myBackupPath" "" # local = no prefix
+}
+
+syncMyAndTheirFileDifferences(){
+    _theirBackupPath="$1"  
+    _myBackupPath="$2" 
+
+    # We are the pusher of the new state.
+    # When we have a file, and they do not, it will be marked as "added" and needs to be added there
+    # If they have a file and we do not, it will be marked as "deleted" 
+    # - and it needs to be deleted here, or deleted there
+
+
+    # We use the same code to update our local repository
+    _handleNewlyDeletedFiles "$_theirBackupPath" "$_myBackupPath" "$__prefix_remote"
+    _handleNewlyAddedDeleteFiles "$_theirBackupPath" "$_myBackupPath" "$__prefix_remote"
+}
+
+createRemoteFileListSnapshot(){
+    serverName="$1"
+
+    ssh "$serverName" "createSnapshots.sh"
 
 }
 
-# Parameters are: 
-# 1: Backup-ID - any string value to help you and the system to identify the backup, 
-#    - for instance: "workfiles", "projects", "my-photos"
-# 2: The path to the source that you want to backup
-# 3: The path to the destination folder, in which to create the backup
-#    - This folder has to exist.
-# 4: The name of the folder in which to make the backup
-# 5: If confoirm is needed. 
-#    - 'no-confirm' will run the script without user confirmation - good for chron jobs
-#    - 'no-warning' will ask for confirmation, but will not show the warning. 
-#      Useful if you run several mirror-backups
 
-# runMirrorBackup "bckp-id-001" "./source/" "./backup/" "source" "no-confirm"
-# This setup allows you to configure and manage multiple backups from one script
+makeLocalSnapshots(){
+    myBackupPath="$2"  
+
+    # Step 1: Get snapshots
+    make_snapshot_fileList_mostRecent "$myBackupPath" 
+
+    # Step 2: Get differences
+    extract_MyNewAndDeletedFilesFromSnapshot "$myBackupPath"
+
+    # MAke sure we have these deleted files registered, 
+    # so we can do compares on the approximate date/time of these deletes
+    register_MyNewlyDeletedFiles "$myBackupPath"
+
+    # Note that the frequency of running this script will determine 
+
+mirrorSync(){
+    theirBackupPath="$1"  
+    myBackupPath="$2" 
+
+    # Step 1: Make snapshots, so we have the current state to properly synchronize
+    makeLocalSnapshots "$myBackupPath"
+
+    # Start working with the remote machine
+
+    # Step 2: Extract the differences between us and them
+    extract_AddedAbsentOverlappingFilesFromTheirSnapshots "$theirBackupPath" "$myBackupPath"
+    extract_ModifiedFilesFromTheirSnapshots "$theirBackupPath" "$myBackupPath"
+
+    # Step 3: use the extracted data to sync the list below.
+    sync_FilesLocallyAbsent "$theirBackupPath" "$myBackupPath"
+    sync_localAdditions "$theirBackupPath" "$myBackupPath"
+    sync_allModifiedFiles "$theirBackupPath" "$myBackupPath"
+
+    # Step 4: Assure we can compare our local state in the next round.
+    make_milestoneSnapshot_fileList "$myBackupPath"
+
+    # We don not need a milestone snapshot with date/time/filesiuze, 
+    # as we only need the most recent snapshot to compate oruself with remote.
+
+    # Step 5: Make new local snapshots, so our other friends can see the most recent state now.
+    makeLocalSnapshots "$myBackupPath"
+
+}
+
+# make_snapshot_DateTimeSize "/home/peterkaptein/Documents/git/bash-scripts/backup/deltas_copy"
+# make_milestoneSnapshot_fileList "/home/peterkaptein/Documents/git/bash-scripts/backup/deltas_copy"
+# make_snapshot_fileList_mostRecent "/home/peterkaptein/Documents/git/bash-scripts/backup/deltas_copy"
+
+# extract_MyNewAndDeletedFilesFromSnapshot "/home/peterkaptein/Documents/git/bash-scripts/backup/deltas"
 

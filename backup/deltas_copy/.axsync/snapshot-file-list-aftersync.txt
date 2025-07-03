@@ -1,0 +1,17 @@
+|
+|.axsync
+|.axsync/extracted-filelist-added.txt
+|.axsync/extracted-filelist-deleted.txt
+|.axsync/snapshot-date-filesize.txt.abs
+|.axsync/snapshot-file-list-aftersync.txt
+|.axsync/snapshot-file-list-update.txt
+|.axsync/snapshot-file-list-update.txt.diff
+|my-changed-filesfolders.txt
+|my-changed-filesfolders.txtsed
+|my-changes.txt
+|my-diff.txt
+|my-newfiles-and-deletions.txt
+|my-server-filelist.txt
+|my-server-snapshot.txt
+|my-ssot-filelist.txt
+|my-ssot-snapshot.txt

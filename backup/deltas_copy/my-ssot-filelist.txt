@@ -1,0 +1,13 @@
+=.
+=./syncmethods
+=./syncmethods/sync-encrypted.sh
+=./syncmethods/sync-non-encrypted.sh
+=./mirror-backup.sh
+=./timemachine.sh
+=./my-ssot-snapshot.txt
+=./my-changes.txt
+=./my-diff.txt
+=./my-changed-filesfolders.txt
+=./my-changed-filesf-olders.txtsed
+=./my-server-filelist.txt
+=./my-ssot-filelist.txt

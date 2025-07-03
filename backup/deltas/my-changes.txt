@@ -1,0 +1,8 @@
+-794	Tue Jun 17 23:20:35.0992565590 2025	=./syncmethods/sync-non-encrypted.sh
+-20289	Wed Jun 18 00:21:01.6656688100 2025	=./mirror-backup.sh
+-669	Tue Jun 24 16:09:28.4916462180 2025	=./my-ssot-snapshot.txt
+-665	Tue Jun 24 16:28:52.1767680770 2025	=./my-changes.txt
++669	Tue Jun 24 12:09:28.4916462180 2025	=./my-ssot-snapshot.txt
++665	Tue Jun 24 14:28:52.1767680770 2025	=./my-changes.txt
++76	Wed Jun 18 00:20:54.7485783760 2025	=./syncmethods
++290	Tue Jun 24 16:20:29.0160921800 2025	=.

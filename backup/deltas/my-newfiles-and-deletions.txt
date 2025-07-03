@@ -1,0 +1,5 @@
+./client-config.sh
+./monitor-filesystem.sh
+./my-server-snapshot.txt
+./my-changed-filesfolders.txtsed
+./my-newfiles-and-deletions.txt

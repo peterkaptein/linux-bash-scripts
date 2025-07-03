@@ -1,0 +1,8 @@
+./syncmethods/sync-non-encrypted.sh
+./mirror-backup.sh
+./my-ssot-snapshot.txt
+./my-changes.txt
+./my-ssot-snapshot.txt
+./my-changes.txt
+./syncmethods
+.
