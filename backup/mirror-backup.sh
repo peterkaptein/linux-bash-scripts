@@ -39,6 +39,10 @@
 # https://blog.kellybrazil.com/2021/04/12/practical-json-at-the-command-line/
 #
 
+
+# INCLUDES
+source ssfh-mount.sh
+
 #
 # =============================================================
 # Variables from system
@@ -62,7 +66,9 @@ __snapshot_fileList_locallyAbsent="extracted-filelist-locaslly-absent.txt"
 __snapshot_fileList_overlapping="extracted-filelist-overlapping.txt"
 __snapshot_fileList_locallyAdded="extracted-filelist-locally-added.txt"
 __snapshot_fileList_Modified="extracted-filelist-modified.txt"
-__deletedFolder=".deleted/"
+__deletedFolder="deleted"
+
+__sshFs_mountPoint="/tmp/tmp_ssfsh_mount" 
 
 __prefix_remote="merge-"
 
@@ -91,16 +97,6 @@ file_A_isOlderThan_B(){
     echo false
 }
 
-fileIsInDeletedFolder(){
-
-    filePath="$1"
-    if [[ "$filePath" == *"$__deletedFolder"* ]]
-    then
-        echo true
-        exit
-    fi
-    echo false
-}
 fileIsInSyncReportsFolder(){
 
     if [[ "$myAddedFileName" == *"$__mySyncReportsFolder"* ]]
@@ -111,22 +107,37 @@ fileIsInSyncReportsFolder(){
     echo false
 }
 
+isBackupFolder(){
+    folder="$1"
+
+    if [ -d "$file/$__mySyncReportsFolder" ]
+    then
+        echo true
+        exit
+    fi
+    echo false
+
+}
+
 escapePathForRegex(){
     _path="$1"
     echo "$(replace "$_path" "/" "\\/")"
 }
 
-createSnapshotFileLocation(){
+getLocation_snapshotFile(){
     _myBackupPath="$1"
     _fileName="$2"
 
     echo "$_myBackupPath/$__mySyncReportsFolder/$_fileName"
 }
 
-createDeletedRefFile()
-{
-    myDeletedFile="$1"
-    echo "Marked as deleted on $hour" > "$myDeletedFile" 
+
+ensureDir() {
+    # Parameter  based, like Bash-file. $1 is first item in input
+    path="$1" # based on input
+
+    # 2: Create dir if not there yet
+    mkdir -p "$path" # Recursive, so if parents are not there, they will be created as well
 }
 
 ensureDirForFileCopy() {
@@ -155,11 +166,82 @@ getPathTo(){
     echo "${myPath%/*}"
 }
 
-get_FileDeletionMarker(){
-    myFileLocation="$1"
-    path=$(dirname "$myFileLocation")
-    fileName=$(basename "$myFileLocation")
-    echo "$path/.deleted/$fileName"
+# File deletion
+getLocation_FileDeletionMarker(){
+
+    myBackupLocation="$1"
+    myRelativeFileLocation="$2"
+
+    # Return location of the "deleted" files folder.
+    # Something like: /aa/bb/myBackupFolder/.axsync/deleted/folder/subfolder/filename.extention"
+
+    # It takes:
+    # 1: the locaiton of the backup, 
+    # 2: the relative location of the file, 
+    # and inserts the .axsync/deleted/ folders, so whatever we deleted is kept forever.
+    # And so deleted folders can remain deleted.
+
+    echo "$myBackupLocation/$__mySyncReportsFolder/$__deletedFolder/$myRelativeFileLocation"
+}
+
+fileIsInDeletedFolder(){
+
+    filePath="$1"
+    if [[ "$filePath" == *"$__mySyncReportsFolder/$__deletedFolder"* ]]
+    then
+        echo true
+        exit
+    fi
+    echo false
+}
+
+create_fileDeletionMarker(){
+    # Since we do not use a database, we need to keep track of deletions in a different way.
+
+    # We do this, by creating a shadow-list of deleted files, 
+    # with a rough indication of their delete-time.
+    # This allows us to query the backups, and see if files were deleted, added 
+    # or changed after a deletion here or elsewhere.
+
+    # PRECISION = AVERAGE
+    # The precision of the deletion depends on the freqency with which our local snapshots are made.
+    # We do this via: makeLocalSnapshots "$ourBackupLocation" from client to server.
+
+    # SERVER TO SERVER SYNC
+    # Server-to-server syncs happen between repositories, to avoid overhead.
+
+    # FIXED SYNC-LOCATIONS
+    # To keep things simple, the clients must store all their backups under a username.and a foldername
+    # Per backup, the system will take each subfolder, and start the backup from there, 
+    # to a related remote location.
+    # 
+    # This allows for a backup-system without any maintenance on the server. 
+
+
+
+
+
+    myBackupLocation="$1"
+    myRelativeFileLocation="$2"
+
+    _markerLocation="$(getLocation_FileDeletionMarker "$myBackupLocation" "$myRelativeFileLocation")"
+
+
+    ensureDirForFileCopy "$_markerLocation"
+
+    # Create file with date/timestamp of now
+    echo -n "deletion marker for date/time reference" > "$_markerLocation"
+
+    # This records the date/time we discovered that a local file was deleted
+
+    # This is NOT the time of deletion.
+
+    # Running a local snapshot, and scanning for deletions on a regular basis 
+    # - for instance: every 30 or 15 minutes
+    # will increase the precision of these local deletions.
+
+    # When syncrhonizing we alwayts compate local deletions
+    # against the files on the remote machine.
 }
 
 removeAbsolutePathFromSnapshot(){
@@ -170,6 +252,7 @@ removeAbsolutePathFromSnapshot(){
     escapedBackupPath="$(escapePathForRegex "$_myBackupPath" )"
     sed "s/$escapedBackupPath//" <"$_snapShotFile.abs" > "$_snapShotFile"
 }
+
 
 save_cleanList_diffAdded(){
     _myFile="$1"
@@ -196,7 +279,7 @@ save_cleanList_diffOverlapping(){
 make_snapshot_DateTimeSize(){
     _myBackupPath="$1"
 
-    _saveAs="$(createSnapshotFileLocation "$_myBackupPath" "$__snapshot_dateTimeFileSize")"
+    _saveAs="$(getLocation_snapshotFile "$_myBackupPath" "$__snapshot_dateTimeFileSize")"
     ensureDirForFileCopy "$_saveAs"
 
     # Find all modified files, using filesize and change date
@@ -212,7 +295,7 @@ _makeFileListSnapshot(){
     _snapshotFileList="$2"
 
     # Construct name to save file as
-    _saveAs="$(createSnapshotFileLocation "$_myBackupPath" "$_snapshotFileList")"
+    _saveAs="$(getLocation_snapshotFile "$_myBackupPath" "$_snapshotFileList")"
     ensureDirForFileCopy "$_saveAs"
 
     # Read my local backup path, write to snapshot filelist name / folder
@@ -246,12 +329,12 @@ extract_MyNewAndDeletedFilesFromSnapshot(){
     _myBackupPath="$1"
 
     # Sources:
-    _oldSnapshotFile="$(createSnapshotFileLocation "$_myBackupPath" "$__snapshot_rawFileList_mileStone")" 
-    _newSnapshotFile="$(createSnapshotFileLocation "$_myBackupPath" "$__snapshot_rawFileList_mostRecent")"
+    _oldSnapshotFile="$(getLocation_snapshotFile "$_myBackupPath" "$__snapshot_rawFileList_mileStone")" 
+    _newSnapshotFile="$(getLocation_snapshotFile "$_myBackupPath" "$__snapshot_rawFileList_mostRecent")"
 
     # Results: file name
-    _saveAsDeleted="$(createSnapshotFileLocation "$_myBackupPath" "$__snapshot_fileList_locallyAbsent")"
-    _saveAsAdded="$(createSnapshotFileLocation "$_myBackupPath" "$__snapshot_fileList_locallyAdded")"
+    _saveAsDeleted="$(getLocation_snapshotFile "$_myBackupPath" "$__snapshot_fileList_locallyAbsent")"
+    _saveAsAdded="$(getLocation_snapshotFile "$_myBackupPath" "$__snapshot_fileList_locallyAdded")"
    
     ensureDirForFileCopy "$_newSnapshotFile"
 
@@ -281,13 +364,13 @@ extract_AddedAbsentOverlappingFilesFromTheirSnapshots(){
     _myBackupPath="$2"
     
     # Sources:
-    _theirSnapshotFile="$(createSnapshotFileLocation "$_theirBackupPath" "$__snapshot_rawFileList_mostRecent")" 
-    _mySnapshotFile="$(createSnapshotFileLocation "$_myBackupPath" "$__snapshot_rawFileList_mostRecent")"
+    _theirSnapshotFile="$(getLocation_snapshotFile "$_theirBackupPath" "$__snapshot_rawFileList_mostRecent")" 
+    _mySnapshotFile="$(getLocation_snapshotFile "$_myBackupPath" "$__snapshot_rawFileList_mostRecent")"
 
     # Results: file name
-    _saveAsAbsent="$(createSnapshotFileLocation "$_myBackupPath" "$__prefix_remote$__snapshot_fileList_locallyAbsent")"
-    _saveAsAdded="$(createSnapshotFileLocation "$_myBackupPath" "$__prefix_remote$__snapshot_fileList_locallyAdded")"
-    _saveAsOverlapping="$(createSnapshotFileLocation "$_myBackupPath" "$__prefix_remote$__snapshot_fileList_overlapping")"
+    _saveAsAbsent="$(getLocation_snapshotFile "$_myBackupPath" "$__prefix_remote$__snapshot_fileList_locallyAbsent")"
+    _saveAsAdded="$(getLocation_snapshotFile "$_myBackupPath" "$__prefix_remote$__snapshot_fileList_locallyAdded")"
+    _saveAsOverlapping="$(getLocation_snapshotFile "$_myBackupPath" "$__prefix_remote$__snapshot_fileList_overlapping")"
    
     ensureDirForFileCopy "$_newSnapshotFile"
 
@@ -329,11 +412,11 @@ extract_ModifiedFilesFromTheirSnapshots(){
     # "Newer" files are marked with a + when "added" in the "new" snapshot
     # However, we want to exclude deleted files on both sides, 
     # as these were probably deliberately removed and should not be introduced again
-    _theirDateTimeSnapshotFile="$(createSnapshotFileLocation "$_theirBackupPath" "$__snapshot_dateTimeFileSize")" 
-    _myDateTimeSnapshotFile="$(createSnapshotFileLocation "$_myBackupPath" "$__snapshot_dateTimeFileSize")"
-    _saveAsModified="$(createSnapshotFileLocation "$_myBackupPath" "$__prefix_remote$__snapshot_fileList_Modified")"
+    _theirDateTimeSnapshotFile="$(getLocation_snapshotFile "$_theirBackupPath" "$__snapshot_dateTimeFileSize")" 
+    _myDateTimeSnapshotFile="$(getLocation_snapshotFile "$_myBackupPath" "$__snapshot_dateTimeFileSize")"
+    _saveAsModified="$(getLocation_snapshotFile "$_myBackupPath" "$__prefix_remote$__snapshot_fileList_Modified")"
     
-    _myOverlappingFilesSnapshot="$(createSnapshotFileLocation "$_myBackupPath" "$__prefix_remote$__snapshot_fileList_overlapping")"
+    _myOverlappingFilesSnapshot="$(getLocation_snapshotFile "$_myBackupPath" "$__prefix_remote$__snapshot_fileList_overlapping")"
    
     _myDiffOneFile="$_myDateTimeSnapshotFile.remote-diff1.txt"
     _myDiff_addedOrOverlapping="$_myDateTimeSnapshotFile.remote-diff-cleanlist.txt"
@@ -370,7 +453,7 @@ register_MyNewlyDeletedFiles(){
 
     # Load locally-deleted files list
     # - Remove files remote
-    _myDeleted="$(createSnapshotFileLocation "$_myBackupPath" "$__snapshot_fileList_locallyAbsent")" 
+    _myDeleted="$(getLocation_snapshotFile "$_myBackupPath" "$__snapshot_fileList_locallyAbsent")" 
 
     # Load remotely deleted files list
     # - Remove files locally
@@ -389,17 +472,17 @@ register_MyNewlyDeletedFiles(){
         fi
 
         # Get filename
-        fileName=$(basename "$_deletedFile")
+        fileName="$(basename "$_deletedFile")"
 
         # First handle ourselves
-        _myDeletedFileMarker="$(getPathTo "$_deletedFile")/.deleted/$fileName"
+        _myDeletedFileMarker=getLocation_FileDeletionMarker "$_myBackupPath" "$deletedFile"
         ensureDirForFileCopy "$_myDeletedFileMarker"
         # Concrete file has been delete. But is there a marker?
         if ! $(fileExists "$_myDeletedFileMarker" )
         then
             # Create deleted file-marker, for referecne
             # This functions as our database of deletions, with time/date
-            echo -n > "$_myDeletedFileMarker"
+            create_fileDeletionMarker "$_myBackupPath" "$deletedFile"
         fi
     done
 }
@@ -410,7 +493,7 @@ sync_FilesLocallyAbsent(){
 
     # Load locally-deleted files list
     # - Remove files remote
-    _myAbsentFiles="$(createSnapshotFileLocation "$_myBackupPath" "$__prefix_remote$__snapshot_fileList_locallyAbsent")" 
+    _myAbsentFiles="$(getLocation_snapshotFile "$_myBackupPath" "$__prefix_remote$__snapshot_fileList_locallyAbsent")" 
 
     # Load remotely deleted files list
     # - Remove files locally
@@ -431,17 +514,17 @@ sync_FilesLocallyAbsent(){
 
         # First handle ourselves
         myAbsentFile="$_myBackupPath/$absentFile"
-        myDeletedFileMarker="$(get_FileDeletionMarker "$myAbsentFile")"
+        myDeletedFileMarker="$(getLocation_FileDeletionMarker "$_myBackupPath" "$absentFile")"
         
         theirFile="$_theirBackupPath/$absentFile"
-        theirDeletedFile="$(get_FileDeletionMarker "$theirFile")"
+        theirDeletedFile="$(getLocation_FileDeletionMarker "$_theirBackupPath" "$absentFile")"
 
         # Check 1: Is this a new file? 
         # - Do we have a local "deleted"-marker?
         if ! $(fileExists "$myDeletedFileMarker" )
         then 
             # No delete record. Remote file is a new file.
-            rsync "$theirFile" "$myAbsentFile"
+            rsync -aruP "$theirFile" "$myAbsentFile"
 
             # Done with this file
             return
@@ -455,7 +538,7 @@ sync_FilesLocallyAbsent(){
         if $(file_A_isOlderThan_B "$myDeletedFileMarker" "$theirFile")
         then
             # Remote is newer than delete. Restore local file
-            rsync "$theirFile" "$myAbsentFile"
+            rsync -aruP "$theirFile" "$myAbsentFile"
 
             # Done with this file
             return
@@ -473,7 +556,7 @@ sync_FilesLocallyAbsent(){
             rm "$theirFile"
 
             # Create deleted file, for date/time referecne
-            echo -n > "$theirDeletedFile"
+            create_fileDeletionMarker "$_theirBackupPath" "$myRelativeFileLocation"
         fi
 
     done
@@ -481,12 +564,27 @@ sync_FilesLocallyAbsent(){
 sync_localAdditions(){
     _theirBackupPath="$1"  
     _myBackupPath="$2"
-    # In this case, we will handle all files marked as added or modified
-    # in the compare between us and our remote location. 
+    
+    # "Local additions" are based on a compare 
+    # of our file list versus theirs
 
-    # Baserd on specific checks, we will determine what to do.
+    # They signify 2 things:
+    # - A file was really added locally, and needs to be copied to remote
+    # - This file was deleted remotely, but not yet heare
+    # - This file was deleted remotely, and restored here..
+
+    # We do a minimum of 1 check per file, and a max of 3 checks to see whether the file is:
+    # - Deleted AFTER our local modify-date           --> Also delete here
+    # - Deleted remote, BEFORE our local modify-date  --> Restore on remote
+    # - Non existing on remote                        --> Copy to remote
+
+    # If not deleted, we will copy the file to the remote location
+    # If the file is newer than the deletion-date, we will copy yhe file to the remote locaiton
+    # If deleted remotely, and our file is older, we delete it locally.
+
+    # These checks assure that local and remote modifications are respected.
    
-   _myLocallyAddedAndModifiedFiles="$(createSnapshotFileLocation "$_myBackupPath" "$__prefix_remote$__snapshot_fileList_locallyAdded")"
+   _myLocallyAddedAndModifiedFiles="$(getLocation_snapshotFile "$_myBackupPath" "$__prefix_remote$__snapshot_fileList_locallyAdded")"
 
     # Get the list of files locally added or modified, either remote or local
     cat "$_myLocallyAddedAndModifiedFiles"|
@@ -505,18 +603,19 @@ sync_localAdditions(){
             return
         fi
 
-        _myAddedOrModifiedFile="$_myBackupPath/$myAddedOrModifiedFile"
-        _theirAddedOrModifiedFile="$_theirBackupPath/$myAddedOrModifiedFile"
+        _myAddedFile="$_myBackupPath/$myAddedOrModifiedFile"
+        _theirAbsentFile="$_theirBackupPath/$myAddedOrModifiedFile"
 
-        _theirDeletedFileMarker="$(get_FileDeletionMarker "$_theirAddedOrModifiedFile")"
-        _myDeletedFileMarker="$(get_FileDeletionMarker "$_myAddedOrModifiedFile")"
+        _theirDeletedFileMarker="$(getLocation_FileDeletionMarker "$_theirBackupPath" "$myAddedOrModifiedFile")"
+
+        # In case our file was deleted remotely
+        _myDeletedFileMarker="$(getLocation_FileDeletionMarker "$_myBackupPath" "$myAddedOrModifiedFile")" 
 
 
-        # We have files locally, that either
-        # - Are of a different version
+        # We have files locally, that
         # - Are absent on the remote location
 
-        # Sync-case 1: File is absent on remote
+        # Sync-case 1: File has been deleted on remote
 
         # Was it deleted there?
         if $(fileExists "$_theirDeletedFileMarker" )
@@ -524,12 +623,12 @@ sync_localAdditions(){
             # It was deleted there.
 
             # Is the local file newer than the remote deletion?
-            if $(file_A_isOlderThan_B "$_theirDeletedFileMarker" "$_myAddedOrModifiedFile")
+            if $(file_A_isOlderThan_B "$_theirDeletedFileMarker" "$_myAddedFile")
             then
                 # Yes: Local file is newer than remote delete. 
     
                 # Restore remote file with local (newer) version.
-                rsync "$_myAddedOrModifiedFile" "$_theirAddedOrModifiedFile"
+                rsync -aruP "$_myAddedFile" "$_theirAbsentFile"
 
                 # Remove remote "Deleted"-record, as it is no longer valid
                 rm "$_theirDeletedFileMarker"
@@ -539,14 +638,14 @@ sync_localAdditions(){
 
             # Our local file was neot newer than remote.
             # Is it older than the remote delete?
-            if $(file_A_isOlderThan_B "$_myAddedOrModifiedFile" "$_theirDeletedFileMarker")
+            if $(file_A_isOlderThan_B "$_myAddedFile" "$_theirDeletedFileMarker")
             then
                 # Yes. Local file is older than remote delete.
                 # Delete local file so we are in sync with remote
-                rm "$_myAddedOrModifiedFile"
+                rm "$_myAddedFile"
 
                 # Create deleted file marker, for date/time referecne
-                echo -n > "$_myDeletedFileMarker"
+                create_fileDeletionMarker "$_myBackupPath" "$myAddedOrModifiedFile"
                 # Done with this file
                 return
             fi       
@@ -558,11 +657,11 @@ sync_localAdditions(){
         #   - Modified
         #   - Not present yet on remote
 
-        # Sync-case 2: Remote file does not  exists.
-        if ! $(fileExists "$_theirAddedOrModifiedFile" )
+        # Sync-case 2: A new file was created here
+        if ! $(fileExists "$_theirAbsentFile" )
         then
             # Copy local to remote
-            rsync "$_myAddedOrModifiedFile" "$_theirAddedOrModifiedFile"
+            rsync -aruP "$_myAddedFile" "$_theirAbsentFile"
             # Done.
             return
         fi
@@ -572,35 +671,40 @@ sync_localAdditions(){
 sync_allModifiedFiles(){
     _theirBackupPath="$1"  
     _myBackupPath="$2"
-    # In this case, we will handle all files marked as added or modified
-    # in the compare between us and our remote location. 
 
-    # Baserd on specific checks, we will determine what to do.
+    # We use a list of all "modified" files:
+    # - Existing both here and remote
+ 
+    # We check
+    # - Who has the most recent version (us? them?).
+
+    # Based on that check, we will 
+    # - replace the older version with the most recent.
    
-   _myLocallyAddedAndModifiedFiles="$(createSnapshotFileLocation "$_myBackupPath" "$__prefix_remote$__snapshot_fileList_Modified")"
+    _myModifiedFileList="$(getLocation_snapshotFile "$_myBackupPath" "$__prefix_remote$__snapshot_fileList_Modified")"
 
     # Get the list of files locally added or modified, either remote or local
-    cat "$_myLocallyAddedAndModifiedFiles"|
-    while IFS= read -r myAddedOrModifiedFile
+    cat "$_myModifiedFileList"|
+    while IFS= read -r myModifiedFile
     do
 
 
         # Files in .axsync are mine and should not be compared
-        if $(fileIsInSyncReportsFolder "$myAddedOrModifiedFile"); then
+        if $(fileIsInSyncReportsFolder "$myModifiedFile"); then
             return
         fi
 
         # Files in .deleted are mine and should not be compared
-        if $(fileIsInDeletedFolder "$myAddedOrModifiedFile"); then
+        if $(fileIsInDeletedFolder "$myModifiedFile"); then
             # We skip files located in .deleted
             return
         fi
 
-        _myAddedOrModifiedFile="$_myBackupPath/$myAddedOrModifiedFile"
-        _theirAddedOrModifiedFile="$_theirBackupPath/$myAddedOrModifiedFile"
+        _myModifiedFile="$_myBackupPath/$myModifiedFile"
+        _theirModifiedFile="$_theirBackupPath/$myModifiedFile"
 
-        _theirDeletedFileMarker="$(get_FileDeletionMarker "$_theirAddedOrModifiedFile")"
-        _myDeletedFileMarker="$(get_FileDeletionMarker "$_myAddedOrModifiedFile")"
+        _theirDeletedFileMarker="$(getLocation_FileDeletionMarker "$_theirBackupPath" "$myModifiedFile")"
+        _myDeletedFileMarker="$(getLocation_FileDeletionMarker "$_myBackupPath" "$myModifiedFile")"
 
 
         # We have files locally, that
@@ -609,20 +713,20 @@ sync_allModifiedFiles(){
         # Sync-case: File was modified either here or there.
 
         # Is the local file older than remote?
-        if $(file_A_isOlderThan_B "$_myAddedOrModifiedFile" "$_theirAddedOrModifiedFile")
+        if $(file_A_isOlderThan_B "$_myModifiedFile" "$_theirModifiedFile")
         then
             # Remote is newer than delete. Restore local file with remote
-            rsync "$_theirAddedOrModifiedFile" "$_myAddedOrModifiedFile"
+            rsync -aruP "$_theirModifiedFile" "$_myModifiedFile"
 
             # Done.
             return
         fi
 
         # Is the remote file older than local?
-        if $(file_A_isOlderThan_B "$_theirAddedOrModifiedFile" "$_myAddedOrModifiedFile")
+        if $(file_A_isOlderThan_B "$_theirModifiedFile" "$_myModifiedFile")
         then
             # Remote is newer than delete. Restore local file with remote
-            rsync "$_myAddedOrModifiedFile" "$_theirAddedOrModifiedFile"
+            rsync -aruP "$_myModifiedFile" "$_theirModifiedFile"
 
             # Done.
             return
@@ -675,8 +779,9 @@ makeLocalSnapshots(){
     register_MyNewlyDeletedFiles "$myBackupPath"
 
     # Note that the frequency of running this script will determine 
+}
 
-mirrorSync(){
+_mirrorSync(){
     theirBackupPath="$1"  
     myBackupPath="$2" 
 
@@ -705,9 +810,97 @@ mirrorSync(){
 
 }
 
+_mirrorSync_serverToServer(){
+    # Precondition:
+    # We use a very simple and rigid structure to make backups. 
+    # It is based on the following premises:
+    # 1: The client is given a direct link to their backup-folder on the backup drive.
+    # 2: The client backs up to that folder directly, using the name of their backup.
+
+    localBackupsLocation="$1" # The folder where we store all our local backups
+    remoteBackupsLocation="$2" # The folder where the other server keeps all their backups
+
+    # To keep it simple: remote and local mirror-backup folders are mounted and stored under 
+    # - "/mnt/backups/<username>/mirrorbackups/foldername"
+
+
+    for dir in $(find "$localBackupsLocation" -type d -maxdepth 2 -printf "%P\n")
+    do
+        # Prepare
+        _localDir="$localBackupsLocation/$dir"
+        _remoteDir="$remoteBackupsLocation/$dir"
+
+        # Check if localdir is a backup-folder
+        if $(isBackupFolder "$_localDir")
+        then
+            # It is.
+            mirrorSync "$_remoteDir" "$_localDir"
+        fi
+    done
+
+}
+
+_mirrorSync_clientToServer(){
+    _myBackupsLocation="$1" # The folder where we store all our local backups
+    _serverLocalMountPoint="$2"
+    
+    mirrorSync "$_serverLocalMountPoint" "$_myBackupsLocation"
+    
+}
+
+mirrorSync(){
+    type="$1"
+    username="$2"
+    server="$3"
+    serverStartpoint="$4"
+
+    remoteBackupSubfolder="$5"
+    localSourceFolder="$6"
+
+    _remoteUserFolder="$serverStartpoint/$username"
+    localMountPoint="$__sshFs_mountPoint/mirrorbackup"
+
+    myFolderName="$(basename "$localSourceFolder")"
+
+    remoteSubFolder="$remoteBackupSubfolder/$myFolderName" 
+
+    echo "Connect using SSHFS:
+====================
+Backup type            : $type to server
+Source folder          : $localSourceFolder
+
+Backup target          : $server
+With user              : $username
+To remote user folder  : $_remoteUserFolder 
+And subfolder          : $remoteSubFolder
+- Mounted locally to   : $localMountPoint
+
+"
+    # disconnect "$localMountPoint"
+    if mountpoint -q "$localMountPoint"; then
+        echo "Existing mount found. Disconnecting.."
+        disconnect "$localMountPoint"
+    fi
+    # Mount
+    mountSSHFS "$username"  "$server" "$_remoteUserFolder" "$remoteSubFolder" "$localMountPoint"
+
+    # Sync
+    #_mirrorSync "$localMountPoint" "$localSourceFolder"
+
+    # Unmount / disconnect
+    #disconnect "$localMountPoint"
+
+}
 # make_snapshot_DateTimeSize "/home/peterkaptein/Documents/git/bash-scripts/backup/deltas_copy"
 # make_milestoneSnapshot_fileList "/home/peterkaptein/Documents/git/bash-scripts/backup/deltas_copy"
 # make_snapshot_fileList_mostRecent "/home/peterkaptein/Documents/git/bash-scripts/backup/deltas_copy"
 
-# extract_MyNewAndDeletedFilesFromSnapshot "/home/peterkaptein/Documents/git/bash-scripts/backup/deltas"
+# extract_MyNewAndDeletedFilesFromSnapshot "/home/peterkaptein/Documents/git/bash-scripts/backup/deltas
+
+# if $(checkIfRemoteFolderExists "peterkaptein@SRV01.local" "/home/peterkaptein/mnt")
+# then 
+#     echo "exists"
+# else
+#     echo "does not exist"
+# fi
 
