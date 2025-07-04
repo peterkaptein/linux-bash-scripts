@@ -199,13 +199,9 @@ createUser(){
 
 #     echo "Add new user to all servers
 # ======================================"
-#     read -p "Enter their username: " newUserName
-#     read -p "Enter their password: " newPassword # 1234klaar
+    read -p "Enter their username: " newUserName
     
-    myPassword="FRNZ123klaar\$567GLx"
-    newUserName="elvirab"
     newPassword=$(head -c 14 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9')
-
 
     echo "Create SSH certificate"
 
