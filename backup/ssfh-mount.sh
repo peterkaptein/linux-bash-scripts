@@ -68,7 +68,7 @@ Unable to connect"
         echo "Mounting $_remote  to: '$_localMountpoint'"
         # cachin, timeout  86000 = 24 hrs. large_read 700.000 = 7 days
         timeout=(60 * 5) # 5 minutes
-        sshfs -o cache=yes,kernel_cache,Compression=no,allow_other,cache_timeout=$timeout "$_remote" "$_localMountpoint"
+        sshfs -o reconnect,cache=yes,kernel_cache,Compression=no,allow_other,cache_timeout=$timeout "$_remote" "$_localMountpoint"
     fi
     echo "Done connecting"
 }

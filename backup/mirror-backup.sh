@@ -39,9 +39,11 @@
 # https://blog.kellybrazil.com/2021/04/12/practical-json-at-the-command-line/
 #
 
-
+myDir="$(dirname $(readlink -f $BASH_SOURCE))"
 # INCLUDES
-source ssfh-mount.sh
+source $myDir/ssfh-mount.sh
+
+
 
 #
 # =============================================================
@@ -849,20 +851,27 @@ _mirrorSync_clientToServer(){
 }
 
 mirrorSync(){
+    # Type" encrypted / non-encrypted
     type="$1"
-    username="$2"
+    
+    # Server
+    serverStartpoint="$2"
     server="$3"
-    serverStartpoint="$4"
-
+    username="$4"
+    
+    # Backup
     remoteBackupSubfolder="$5"
     localSourceFolder="$6"
 
+    # Links
     _remoteUserFolder="$serverStartpoint/$username"
-    localMountPoint="$__sshFs_mountPoint/mirrorbackup"
+
+    remoteMirrorBackupFolder="mirrorbackups"
 
     myFolderName="$(basename "$localSourceFolder")"
 
-    remoteSubFolder="$remoteBackupSubfolder/$myFolderName" 
+    remoteSubFolder="$remoteMirrorBackupFolder/$remoteBackupSubfolder/$myFolderName" 
+    localMountPoint="$__sshFs_mountPoint/$myFolderName"
 
     echo "Connect using SSHFS:
 ====================

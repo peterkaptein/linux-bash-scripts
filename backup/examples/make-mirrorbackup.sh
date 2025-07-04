@@ -1,18 +1,33 @@
-source ../mirror-backup.sh
+myDir="$(dirname $(readlink -f $BASH_SOURCE))"
+
+source $myDir/../mirror-backup.sh
 
 
 # Definations
-username="peterkaptein"
-serverOne="SRV01.local"
-serverSideBackupDriveMountPoint="/mnt/Primary"
+_username="peterkaptein"
+_usersRemoteRootDir="/mnt/Primary" # Location of backup-drive on server
 
-# Connect-packages
-connectPackage_server01ToServer02Sync=("server" "$username" "$serverOne" "$serverSideBackupDriveMountPoint")
-connectPackage_clientToServer01Sync=("client" "$username" "$serverOne" "$serverSideBackupDriveMountPoint")
+# Bakup container
+_myRemoteBackupContainer="test" # No spaces or subfolders allowed.
 
-# Bakup locations
-remoteBackupDir="MyMirrorbackups" # No spaces allowed
-folderToBackup="/home/peterkaptein/Documents/git/bash-scripts/backup/deltas"
+# Backup locations
+servers=( "SRV01.local" )  
+myLocalFolders=( "/home/peterkaptein/Documents/git/bash-scripts/backup/deltas" \
+                "/home/peterkaptein/Documents/git/bash-scripts/backup/deltas")
 
-echo "start sync"
-mirrorSync "${connectPackage_clientToServer01Sync[@]}" "$remoteBackupDir" "$folderToBackup"
+
+# Backup will go into: server:/mnt/primary/<username>/mirrorbackups/<containername>/<sourcefoldername>"
+
+# Loop through servers
+for server in "${servers[@]}"
+do
+    # Connect-packages
+    connectPackage_S01ToS02=("server" "$_usersRemoteRootDir" "$server"  "$_username" "$_myRemoteBackupContainer")
+    connectPackage_clientToS01=("client" "$_usersRemoteRootDir" "$server" "$_username" "$_myRemoteBackupContainer")
+
+    echo "start sync"
+    for myFileLocation in "${myLocalFolders[@]}"
+    do
+        mirrorSync "${connectPackage_clientToS01[@]}" "$myFileLocation"
+    done
+done
